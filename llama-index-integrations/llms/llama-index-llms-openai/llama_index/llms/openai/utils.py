@@ -34,6 +34,8 @@ DEFAULT_OPENAI_API_BASE = "https://api.openai.com/v1"
 DEFAULT_OPENAI_API_VERSION = ""
 
 O1_MODELS: Dict[str, int] = {
+    "o1": 200000,
+    "o1-2024-12-17": 200000,
     "o1-preview": 128000,
     "o1-preview-2024-09-12": 128000,
     "o1-mini": 128000,
@@ -253,13 +255,17 @@ def is_function_calling_model(model: str) -> bool:
 
 
 def to_openai_message_dict(
-    message: ChatMessage, drop_none: bool = False, model: Optional[str] = None
+    message: ChatMessage,
+    drop_none: bool = False,
+    model: Optional[str] = None,
 ) -> ChatCompletionMessageParam:
     """Convert a ChatMessage to an OpenAI message dict."""
     content = []
+    content_txt = ""
     for block in message.blocks:
         if isinstance(block, TextBlock):
             content.append({"type": "text", "text": block.text})
+            content_txt += block.text
         elif isinstance(block, ImageBlock):
             if block.url:
                 content.append(
@@ -281,15 +287,26 @@ def to_openai_message_dict(
             msg = f"Unsupported content block type: {type(block).__name__}"
             raise ValueError(msg)
 
+    # NOTE: Sending a blank string to openai will cause an error.
+    # This will commonly happen with tool calls.
+    content_txt = None if content_txt == "" else content_txt
+
+    # NOTE: Despite what the openai docs say, if the role is ASSISTANT, SYSTEM
+    # or TOOL, 'content' cannot be a list and must be string instead.
+    # Furthermore, if all blocks are text blocks, we can use the content_txt
+    # as the content. This will avoid breaking openai-like APIs.
     message_dict = {
         "role": message.role.value,
-        "content": content,
+        "content": content_txt
+        if message.role.value in ("assistant", "tool", "system")
+        or all(isinstance(block, TextBlock) for block in message.blocks)
+        else content,
     }
 
     # TODO: O1 models do not support system prompts
     if model is not None and model in O1_MODELS:
         if message_dict["role"] == "system":
-            message_dict["role"] = "user"
+            message_dict["role"] = "developer"
 
     # NOTE: openai messages have additional arguments:
     # - function messages have `name`
@@ -312,7 +329,11 @@ def to_openai_message_dicts(
 ) -> List[ChatCompletionMessageParam]:
     """Convert generic messages to OpenAI message dicts."""
     return [
-        to_openai_message_dict(message, drop_none=drop_none, model=model)
+        to_openai_message_dict(
+            message,
+            drop_none=drop_none,
+            model=model,
+        )
         for message in messages
     ]
 
